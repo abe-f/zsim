@@ -3,13 +3,14 @@ import numpy as np
 from readable_number import ReadableNumber
 rn = ReadableNumber
 
-f = h5py.File("../zsim-cmp.h5", 'r')
+f = h5py.File("../zsim-ev.h5", 'r')
 
 dset = f["stats"]["root"]
 
 endPhase = dset[-1]['phase']
 
 totalInstrs = np.sum(dset[-1]['beefy']['instrs'])
+# to get core N, do dset[-1]['beefy'][N]['instrs']
 print("total instructions = " + str(rn(totalInstrs)))
 
 l1i_hits = np.sum(dset[-1]['l1i']['hGETS'] + dset[-1]['l1i']['hGETX'] + \
