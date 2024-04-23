@@ -289,15 +289,61 @@ uint64_t MESITopCC::processAccess(Address lineAddr, uint32_t lineId, AccessType 
                 //Give in S state
                 assert(e->sharers[childId] == false);
 
+                bool need_lim_ptr_eviction = false;
                 if (e->isExclusive()) {
                     //Downgrade the exclusive sharer
                     respCycle = sendInvalidates(lineAddr, lineId, INVX, inducedWriteback, cycle, srcId);
                 }
+                else{
+                    // CS533 
+                    // LIMITED POINTER IMPLEMENTATION
+                    // FIND A WAY TO GET CONFIGS HERE
+                    bool ENABLE_LIM_POINTERS = true;
+                    uint32_t MAX_SHARERS = 8;
+
+                    if (ENABLE_LIM_POINTERS){
+                        // This code functionally implements the lim. pointer scheme
+                        // while still using the full bit vector representation
+                        // used by zsim
+                        assert(e->numSharers <= MAX_SHARERS);
+                        if (e->numSharers == MAX_SHARERS){
+                            need_lim_ptr_eviction = true;
+                            assert(e->exclusive == false);
+
+                            // send eviction to a random sharer
+                            uint32_t rand_sharer = rand() % MAX_SHARERS;
+                            uint32_t numChildren = children.size();
+                            uint32_t sharer_ctr = 0;
+                            bool sent_invalidation = false;
+                            for (uint32_t c = 0; c < numChildren; c++){
+                                if (e->sharers[c]){
+                                    if (sharer_ctr == rand_sharer){
+                                        //bool false_var = false;
+                                        //InvReq req = {lineAddr, INV, &false_var, cycle, srcId};
+                                        InvReq req = {lineAddr, INV, inducedWriteback, cycle, srcId};
+                                        respCycle = children[c]->invalidate(req);
+                                        respCycle += childrenRTTs[c];
+                                        respCycle = MAX(respCycle, cycle);
+                                        e->sharers[c] = false;
+                                        sent_invalidation = true;
+                                        break;
+                                    }
+                                    
+                                    sharer_ctr++;
+                                }        
+                            }
+
+                            assert(sent_invalidation);
+                        }
+                    }
+                }
 
                 assert_msg(!e->isExclusive(), "Can't have exclusivity here. isExcl=%d excl=%d numSharers=%d", e->isExclusive(), e->exclusive, e->numSharers);
 
+                if (!need_lim_ptr_eviction) e->numSharers++;
+
                 e->sharers[childId] = true;
-                e->numSharers++;
+                
                 e->exclusive = false; //dsm: Must set, we're explicitly non-exclusive
                 *childState = S;
             }
