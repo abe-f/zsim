@@ -49,6 +49,14 @@ class CacheArray : public GlobAlloc {
         virtual void postinsert(const Address lineAddr, const MemReq* req, uint32_t lineId) = 0;
 
         virtual void initStats(AggregateStat* parent) {}
+
+        // CS533
+        // Adding interfaces for the coherence ctrl to see into the cache arrays
+
+        // This function is passed an id_list (std::vector<uint32_t>) and an address,
+        // and pushes all the id's from the set corresponding to the address into the vector.
+        // It also returns the associativity of the cache.
+        virtual uint32_t get_set(Address lineAddr, std::vector<uint32_t>& id_list) = 0;
 };
 
 class ReplPolicy;
@@ -71,6 +79,9 @@ class SetAssocArray : public CacheArray {
         int32_t lookup(const Address lineAddr, const MemReq* req, bool updateReplacement);
         uint32_t preinsert(const Address lineAddr, const MemReq* req, Address* wbLineAddr);
         void postinsert(const Address lineAddr, const MemReq* req, uint32_t candidate);
+
+        uint32_t get_set(Address lineAddr, std::vector<uint32_t>& id_list);
+
 };
 
 /* The cache array that started this simulator :) */
@@ -106,6 +117,9 @@ class ZArray : public CacheArray {
         uint32_t getLastCandIdx() const {return lastCandIdx;}
 
         void initStats(AggregateStat* parentStat);
+
+        uint32_t get_set(Address lineAddr, std::vector<uint32_t>& id_list);
+
 };
 
 // Simple wrapper classes and iterators for candidates in each case; simplifies replacement policy interface without sacrificing performance

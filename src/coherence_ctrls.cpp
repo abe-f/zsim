@@ -259,8 +259,27 @@ uint64_t MESITopCC::processEviction(Address wbLineAddr, uint32_t lineId, bool* r
 }
 
 uint64_t MESITopCC::processAccess(Address lineAddr, uint32_t lineId, AccessType type, uint32_t childId, bool haveExclusive,
-                                  MESIState* childState, bool* inducedWriteback, uint64_t cycle, uint32_t srcId, uint32_t flags) {
+                                  MESIState* childState, bool* inducedWriteback, uint64_t cycle, uint32_t srcId, uint32_t flags, CacheArray* data_array) {
     Entry* e = &array[lineId];
+    
+    std::vector<uint32_t> id_vector;
+    uint32_t assoc = data_array->get_set(lineAddr, id_vector);
+    //info("data_array->get_set() = %d\n", assoc);
+    //if (e->numSharers) info("e->numSharers = %d\n", e->numSharers);
+
+    bool reclaiming_possible_before = true;
+    if (assoc > 8){ // this means we are the LLC - won't work for all configs
+        assert(id_vector.size() > 8);
+
+        for(uint32_t i = 0; i < id_vector.size(); i++){
+            if (array[id_vector[i]].numSharers > 1){
+                reclaiming_possible_before = false;
+            }
+        }
+    }
+
+    //info("reclaiming_possible = %d", reclaiming_possible_before);
+
     uint64_t respCycle = cycle;
     switch (type) {
         case PUTX:
@@ -298,7 +317,7 @@ uint64_t MESITopCC::processAccess(Address lineAddr, uint32_t lineId, AccessType 
                     // CS533 
                     // LIMITED POINTER IMPLEMENTATION
                     // FIND A WAY TO GET CONFIGS HERE
-                    bool ENABLE_LIM_POINTERS = true;
+                    bool ENABLE_LIM_POINTERS = false;
                     uint32_t MAX_SHARERS = 8;
 
                     if (ENABLE_LIM_POINTERS){
@@ -374,6 +393,31 @@ uint64_t MESITopCC::processAccess(Address lineAddr, uint32_t lineId, AccessType 
         default: panic("!?");
     }
 
+    
+    bool reclaiming_possible_after = true;
+    if (assoc > 8){ // this means we are the LLC]
+        for(uint32_t i = 0; i < id_vector.size(); i++){
+            if (array[id_vector[i]].numSharers > 1){
+                reclaiming_possible_after = false;
+            }
+        }
+
+        if (reclaiming_possible_before == false && reclaiming_possible_after == true){
+            // increment number of shared sets 
+            //info("reclaiming N -> Y");
+            //num_reclaimed_sets++;
+            profNumReclaimedSets.dec();
+            //info("num_reclaimed_sets = %ld", num_reclaimed_sets);
+        }
+        if (reclaiming_possible_before == true && reclaiming_possible_after == false){
+            // decrement number of reclaimed sets
+            //info("reclaiming Y -> N");
+            //num_reclaimed_sets--;
+            profNumReclaimedSets.inc();
+            //info("num_reclaimed_sets = %ld", num_reclaimed_sets);
+        }
+    }
+    
     return respCycle;
 }
 

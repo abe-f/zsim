@@ -145,7 +145,7 @@ uint64_t TimingCache::access(MemReq& req) {
         }
 
         uint64_t getDoneCycle = respCycle;
-        respCycle = cc->processAccess(req, lineId, respCycle, &getDoneCycle);
+        respCycle = cc->processAccess(req, lineId, respCycle, array, &getDoneCycle);
 
         if (evRec->hasRecord()) accessRecord = evRec->popRecord();
 

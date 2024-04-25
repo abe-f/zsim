@@ -87,7 +87,7 @@ uint64_t Cache::access(MemReq& req) {
             wbAcc = evRec->popRecord();
         }
 
-        respCycle = cc->processAccess(req, lineId, respCycle);
+        respCycle = cc->processAccess(req, lineId, respCycle, array);
 
         // Access may have generated another timing record. If *both* access
         // and wb have records, stitch them together

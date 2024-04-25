@@ -232,6 +232,11 @@ class Counter : public ScalarStat {
             _count++;
         }
 
+        
+        inline void dec() {
+            _count--;
+        }
+
         inline void atomicInc(uint64_t delta) {
             __sync_fetch_and_add(&_count, delta);
         }

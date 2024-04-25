@@ -34,6 +34,7 @@
 #include "memory_hierarchy.h"
 #include "pad.h"
 #include "stats.h"
+#include "cache_arrays.h"
 
 //TODO: Now that we have a pure CC interface, the MESI controllers should go on different files.
 
@@ -49,7 +50,7 @@ class CC : public GlobAlloc {
         virtual bool startAccess(MemReq& req) = 0; //initial locking, address races; returns true if access should be skipped; may change req!
         virtual bool shouldAllocate(const MemReq& req) = 0; //called when we don't find req's lineAddr in the array
         virtual uint64_t processEviction(const MemReq& triggerReq, Address wbLineAddr, int32_t lineId, uint64_t startCycle) = 0; //called iff shouldAllocate returns true
-        virtual uint64_t processAccess(const MemReq& req, int32_t lineId, uint64_t startCycle, uint64_t* getDoneCycle = nullptr) = 0;
+        virtual uint64_t processAccess(const MemReq& req, int32_t lineId, uint64_t startCycle, CacheArray* data_array, uint64_t* getDoneCycle = nullptr) = 0;
         virtual void endAccess(const MemReq& req) = 0;
 
         //Inv methods
@@ -218,12 +219,20 @@ class MESITopCC : public GlobAlloc {
             futex_init(&ccLock);
         }
 
+        Counter profNumReclaimedSets;
+
+        void initStats(AggregateStat* parentStat) {
+            profNumReclaimedSets.init("profNumReclaimedSets", "Number of non-reclaimable sets");
+
+            parentStat->append(&profNumReclaimedSets);
+        }
+
         void init(const g_vector<BaseCache*>& _children, Network* network, const char* name);
 
         uint64_t processEviction(Address wbLineAddr, uint32_t lineId, bool* reqWriteback, uint64_t cycle, uint32_t srcId);
 
         uint64_t processAccess(Address lineAddr, uint32_t lineId, AccessType type, uint32_t childId, bool haveExclusive,
-                MESIState* childState, bool* inducedWriteback, uint64_t cycle, uint32_t srcId, uint32_t flags);
+                MESIState* childState, bool* inducedWriteback, uint64_t cycle, uint32_t srcId, uint32_t flags, CacheArray* data_array);
 
         uint64_t processInval(Address lineAddr, uint32_t lineId, InvType type, bool* reqWriteback, uint64_t cycle, uint32_t srcId);
 
@@ -298,7 +307,7 @@ class MESICC : public CC {
         }
 
         void initStats(AggregateStat* cacheStat) {
-            //no tcc stats
+            tcc->initStats(cacheStat);
             bcc->initStats(cacheStat);
         }
 
@@ -344,7 +353,7 @@ class MESICC : public CC {
             return evCycle;
         }
 
-        uint64_t processAccess(const MemReq& req, int32_t lineId, uint64_t startCycle, uint64_t* getDoneCycle = nullptr) {
+        uint64_t processAccess(const MemReq& req, int32_t lineId, uint64_t startCycle, CacheArray* array, uint64_t* getDoneCycle = nullptr) {
             uint64_t respCycle = startCycle;
             //Handle non-inclusive writebacks by bypassing
             //NOTE: Most of the time, these are due to evictions, so the line is not there. But the second condition can trigger in NUCA-initiated
@@ -369,7 +378,7 @@ class MESICC : public CC {
                     bool lowerLevelWriteback = false;
                     //change directory info, invalidate other children if needed, tell requester about its state
                     respCycle = tcc->processAccess(req.lineAddr, lineId, req.type, req.childId, bcc->isExclusive(lineId), req.state,
-                            &lowerLevelWriteback, respCycle, req.srcId, flags);
+                            &lowerLevelWriteback, respCycle, req.srcId, flags, array);
                     if (lowerLevelWriteback) {
                         //Essentially, if tcc induced a writeback, bcc may need to do an E->M transition to reflect that the cache now has dirty data
                         bcc->processWritebackOnAccess(req.lineAddr, lineId, req.type);
@@ -462,7 +471,7 @@ class MESITerminalCC : public CC {
             return endCycle;  // critical path unaffected, but TimingCache needs it
         }
 
-        uint64_t processAccess(const MemReq& req, int32_t lineId, uint64_t startCycle,  uint64_t* getDoneCycle = nullptr) {
+        uint64_t processAccess(const MemReq& req, int32_t lineId, uint64_t startCycle, CacheArray* array, uint64_t* getDoneCycle = nullptr) {
             assert(lineId != -1);
             assert(!getDoneCycle);
             //if needed, fetch line or upgrade miss from upper level
