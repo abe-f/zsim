@@ -80,7 +80,7 @@ class Network;
 /* NOTE: To avoid virtual function overheads, there is no BottomCC interface, since we only have a MESI controller for now */
 
 class MESIBottomCC : public GlobAlloc {
-    private:
+    public:
         MESIState* array;
         g_vector<MemObject*> parents;
         g_vector<uint32_t> parentRTTs;
@@ -101,7 +101,7 @@ class MESIBottomCC : public GlobAlloc {
         lock_t ccLock;
         PAD();
 
-    public:
+    //public:
         MESIBottomCC(uint32_t _numLines, uint32_t _selfId, bool _nonInclusiveHack) : numLines(_numLines), selfId(_selfId), nonInclusiveHack(_nonInclusiveHack) {
             array = gm_calloc<MESIState>(numLines);
             for (uint32_t i = 0; i < numLines; i++) {
@@ -174,10 +174,11 @@ class MESIBottomCC : public GlobAlloc {
         uint32_t getParentId(Address lineAddr);
 };
 
+class MESICC;
 
 //Implements the "top" part: Keeps directory information, handles downgrades and invalidates
 class MESITopCC : public GlobAlloc {
-    private:
+    public:
         struct Entry {
             uint32_t numSharers;
             std::bitset<MAX_CACHE_CHILDREN> sharers;
@@ -204,13 +205,17 @@ class MESITopCC : public GlobAlloc {
         uint32_t numLines;
 
         bool nonInclusiveHack;
+        uint32_t max_sharers; // if 0, this means full-bit
+        bool enable_reclaim;
+        MESICC* cc;
 
         PAD();
         lock_t ccLock;
         PAD();
 
-    public:
-        MESITopCC(uint32_t _numLines, bool _nonInclusiveHack) : numLines(_numLines), nonInclusiveHack(_nonInclusiveHack) {
+    //public:
+        MESITopCC(uint32_t _numLines, bool _nonInclusiveHack, uint32_t _max_sharers, bool _enable_reclaim) : 
+            numLines(_numLines), nonInclusiveHack(_nonInclusiveHack), max_sharers(_max_sharers), enable_reclaim(_enable_reclaim) {
             array = gm_calloc<Entry>(numLines);
             for (uint32_t i = 0; i < numLines; i++) {
                 array[i].clear();
@@ -219,20 +224,20 @@ class MESITopCC : public GlobAlloc {
             futex_init(&ccLock);
         }
 
-        Counter profNumReclaimedSets;
+        Counter profNonReclaimableLines;
 
         void initStats(AggregateStat* parentStat) {
-            profNumReclaimedSets.init("profNumReclaimedSets", "Number of non-reclaimable sets");
+            profNonReclaimableLines.init("profNonReclaimableLines", "Number of non-reclaimable lines");
 
-            parentStat->append(&profNumReclaimedSets);
+            parentStat->append(&profNonReclaimableLines);
         }
 
-        void init(const g_vector<BaseCache*>& _children, Network* network, const char* name);
+        void init(const g_vector<BaseCache*>& _children, Network* network, const char* name, MESICC* cc);
 
         uint64_t processEviction(Address wbLineAddr, uint32_t lineId, bool* reqWriteback, uint64_t cycle, uint32_t srcId);
 
         uint64_t processAccess(Address lineAddr, uint32_t lineId, AccessType type, uint32_t childId, bool haveExclusive,
-                MESIState* childState, bool* inducedWriteback, uint64_t cycle, uint32_t srcId, uint32_t flags, CacheArray* data_array);
+                MESIState* childState, bool* inducedWriteback, uint64_t cycle, uint32_t srcId, uint32_t flags, CacheArray* data_array, MemReq req);
 
         uint64_t processInval(Address lineAddr, uint32_t lineId, InvType type, bool* reqWriteback, uint64_t cycle, uint32_t srcId);
 
@@ -284,17 +289,19 @@ static inline bool CheckForMESIRace(AccessType& type, MESIState* state, MESIStat
 
 // Non-terminal CC; accepts GETS/X and PUTS/X accesses
 class MESICC : public CC {
-    private:
+    public:
         MESITopCC* tcc;
         MESIBottomCC* bcc;
         uint32_t numLines;
         bool nonInclusiveHack;
         g_string name;
+        uint32_t max_sharers;
+        bool enable_reclaim;
 
-    public:
+    //public:
         //Initialization
-        MESICC(uint32_t _numLines, bool _nonInclusiveHack, g_string& _name) : tcc(nullptr), bcc(nullptr),
-            numLines(_numLines), nonInclusiveHack(_nonInclusiveHack), name(_name) {}
+        MESICC(uint32_t _numLines, bool _nonInclusiveHack, g_string& _name, uint32_t _max_sharers, bool _enable_reclaim) : tcc(nullptr), bcc(nullptr),
+            numLines(_numLines), nonInclusiveHack(_nonInclusiveHack), name(_name), max_sharers(_max_sharers), enable_reclaim(_enable_reclaim) {}
 
         void setParents(uint32_t childId, const g_vector<MemObject*>& parents, Network* network) {
             bcc = new MESIBottomCC(numLines, childId, nonInclusiveHack);
@@ -302,8 +309,8 @@ class MESICC : public CC {
         }
 
         void setChildren(const g_vector<BaseCache*>& children, Network* network) {
-            tcc = new MESITopCC(numLines, nonInclusiveHack);
-            tcc->init(children, network, name.c_str());
+            tcc = new MESITopCC(numLines, nonInclusiveHack, max_sharers, enable_reclaim);
+            tcc->init(children, network, name.c_str(), this);
         }
 
         void initStats(AggregateStat* cacheStat) {
@@ -377,8 +384,10 @@ class MESICC : public CC {
                     //At this point, the line is in a good state w.r.t. upper levels
                     bool lowerLevelWriteback = false;
                     //change directory info, invalidate other children if needed, tell requester about its state
+                    MemReq req2 = req;
+                    //req2.cycle = respCycle;
                     respCycle = tcc->processAccess(req.lineAddr, lineId, req.type, req.childId, bcc->isExclusive(lineId), req.state,
-                            &lowerLevelWriteback, respCycle, req.srcId, flags, array);
+                            &lowerLevelWriteback, respCycle, req.srcId, flags, array, req2);
                     if (lowerLevelWriteback) {
                         //Essentially, if tcc induced a writeback, bcc may need to do an E->M transition to reflect that the cache now has dirty data
                         bcc->processWritebackOnAccess(req.lineAddr, lineId, req.type);

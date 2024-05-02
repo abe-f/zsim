@@ -48,11 +48,12 @@ int32_t SetAssocArray::lookup(const Address lineAddr, const MemReq* req, bool up
     return -1;
 }
 
-uint32_t SetAssocArray::get_set(Address lineAddr, std::vector<uint32_t>& id_list){
+uint32_t SetAssocArray::get_set(Address lineAddr, std::vector<uint32_t>& id_list, std::vector<Address>& address_list){
     uint32_t set = hf->hash(0, lineAddr) & setMask;
     uint32_t first = set*assoc;
     for (uint32_t id = first; id < first + assoc; id++) {
         id_list.push_back(id);
+        address_list.push_back(array[id]);
     }
 
     return assoc;
@@ -226,6 +227,6 @@ void ZArray::postinsert(const Address lineAddr, const MemReq* req, uint32_t cand
     statSwaps.inc(swapArrayLen-1);
 }
 
-uint32_t ZArray::get_set(Address lineAddr, std::vector<uint32_t>& id_list){
+uint32_t ZArray::get_set(Address lineAddr, std::vector<uint32_t>& id_list, std::vector<Address>& address_list){
     return -1;
 }

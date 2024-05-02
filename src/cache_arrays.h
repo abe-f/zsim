@@ -56,7 +56,8 @@ class CacheArray : public GlobAlloc {
         // This function is passed an id_list (std::vector<uint32_t>) and an address,
         // and pushes all the id's from the set corresponding to the address into the vector.
         // It also returns the associativity of the cache.
-        virtual uint32_t get_set(Address lineAddr, std::vector<uint32_t>& id_list) = 0;
+        virtual uint32_t get_set(Address lineAddr, std::vector<uint32_t>& id_list, std::vector<Address>& address_list) = 0;
+        
 };
 
 class ReplPolicy;
@@ -80,7 +81,7 @@ class SetAssocArray : public CacheArray {
         uint32_t preinsert(const Address lineAddr, const MemReq* req, Address* wbLineAddr);
         void postinsert(const Address lineAddr, const MemReq* req, uint32_t candidate);
 
-        uint32_t get_set(Address lineAddr, std::vector<uint32_t>& id_list);
+        uint32_t get_set(Address lineAddr, std::vector<uint32_t>& id_list, std::vector<Address>& address_list);
 
 };
 
@@ -118,7 +119,7 @@ class ZArray : public CacheArray {
 
         void initStats(AggregateStat* parentStat);
 
-        uint32_t get_set(Address lineAddr, std::vector<uint32_t>& id_list);
+        uint32_t get_set(Address lineAddr, std::vector<uint32_t>& id_list, std::vector<Address>& address_list);
 
 };
 

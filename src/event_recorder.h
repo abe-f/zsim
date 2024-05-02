@@ -44,6 +44,17 @@ struct TimingRecord {
 
     bool isValid() const { return startEvent; }
     void clear() { startEvent = nullptr; }
+
+    void print(){
+        info("PRINTING RECORD");
+        info("addr = %ld", addr);
+        info("reqCycle = %ld", reqCycle);
+        info("respCycle = %ld", respCycle);
+        info("type = %d", type);
+        //startEvent->print();
+        //endEvent->print();
+        return;
+    }
 };
 
 //class CoreRecorder;
@@ -82,6 +93,7 @@ class EventRecorder : public GlobAlloc {
 
         void pushRecord(const TimingRecord& rec) {
             assert(!tr.isValid());
+            //info("Pushing timing record, ")
             tr = rec;
             assert(tr.isValid());
         }

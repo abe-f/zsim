@@ -165,6 +165,11 @@ class TimingEvent {
             //assert_msg(state == EV_DONE || state == EV_QUEUED || state == EV_HELD, "post-sim state %d (%s)", state, typeid(*this).name());
         }
 
+        void print(){
+            
+            return;
+        }
+        
         // Used when an external, event-driven object takes control of the object --- it becomes queued, but externally
         inline void hold() {
             assert_msg(state == EV_RUNNING, "called hold() with state %d", state);

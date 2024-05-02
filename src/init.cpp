@@ -259,13 +259,19 @@ BaseCache* BuildCacheBank(Config& config, const string& prefix, g_string& name, 
     bool nonInclusiveHack = config.get<bool>(prefix + "nonInclusiveHack", false);
     if (nonInclusiveHack) assert(type == "Simple" && !isTerminal);
 
+    // max_sharers?
+    // if 0, this means full-bit directory
+    uint32_t max_sharers = config.get<uint32_t>(prefix + "max_sharers", 0);
+
+    bool enable_reclaim = config.get<bool>(prefix+"enable_reclaim", false);
+
     // Finally, build the cache
     Cache* cache;
     CC* cc;
     if (isTerminal) {
         cc = new MESITerminalCC(numLines, name);
     } else {
-        cc = new MESICC(numLines, nonInclusiveHack, name);
+        cc = new MESICC(numLines, nonInclusiveHack, name, max_sharers, enable_reclaim);
     }
     rp->setCC(cc);
     if (!isTerminal) {
@@ -798,6 +804,7 @@ static void PostInitStats(bool perProcessDir, Config& config) {
 
     if (zinfo->statsPhaseInterval) {
         const char* periodicStatsFilter = config.get<const char*>("sim.periodicStatsFilter", "");
+        
         AggregateStat* prStat = (!strlen(periodicStatsFilter))? zinfo->rootStat : FilterStats(zinfo->rootStat, periodicStatsFilter);
         if (!prStat) panic("No stats match sim.periodicStatsFilter regex (%s)! Set interval to 0 to avoid periodic stats", periodicStatsFilter);
         zinfo->periodicStatsBackend = new HDF5Backend(pStatsFile, prStat, (1 << 20) /* 1MB chunks */, zinfo->skipStatsVectors, zinfo->compactPeriodicStats);

@@ -121,11 +121,69 @@ class LRUReplPolicy : public ReplPolicy {
         template <typename C> inline uint32_t rank(const MemReq* req, C cands) {
             uint32_t bestCand = -1;
             uint64_t bestScore = (uint64_t)-1L;
+            uint32_t ctr = 0;
+
+            // We need to modify this code to avoid selecting line 20 or 21 as an eviction candidate (even if they are empty)
+            // when any of lines {0,9} and {10,19} have >1 sharers for lines 20 or 21, respectively.
+            bool we_are_llc = false;
+            bool do_not_choose_line_20 = false;
+            bool do_not_choose_line_21 = false;
+            for (auto ci = cands.begin(); ci != cands.end(); ci.inc()) {
+                ctr++;
+            }
+            if (ctr == 22) we_are_llc = true;
+            ctr = 0;
+
+            // Eventually we can pass in more parameters - just doing this in a busted way for now
+            if (we_are_llc){
+                for (auto ci = cands.begin(); ci != cands.end(); ci.inc()) {
+                    if (ctr < 10){
+                        if (cc->numSharers(*ci) > 1){
+                            do_not_choose_line_20 = true;
+                        }
+                    }
+                    else if (ctr > 10 && ctr < 20){
+                        if (cc->numSharers(*ci) > 1){
+                            do_not_choose_line_21 = true;
+                        }
+                    }
+
+                    if (ctr >=20){
+                        uint32_t num_sharers = cc->numSharers(*ci);
+                        if (num_sharers > 3){
+                            info("numSharers = %d", cc->numSharers(*ci));
+                        }
+                        //info("numSharers = %d", cc->numSharers(*ci));
+                        assert(cc->numSharers(*ci) <= 1); // Eventually add this assert, because lines 20 and 21 should never have >1 sharers.
+                    }
+
+                    ctr++;
+                }
+            }
+
+            ctr = 0;
             for (auto ci = cands.begin(); ci != cands.end(); ci.inc()) {
                 uint32_t s = score(*ci);
+                
+                if (we_are_llc){
+                    if (ctr == 20 && do_not_choose_line_20){
+                        //info("Preventing allocation/replacement to line 20");
+                        ctr++;
+                        continue;
+                    }
+                    if (ctr == 21 && do_not_choose_line_21){
+                        //info("Preventing allocation/replacement to line 21");
+                        ctr++;
+                        continue;
+                    }
+                }
+                
                 bestCand = (s < bestScore)? *ci : bestCand;
                 bestScore = MIN(s, bestScore);
+                
+                ctr++;
             }
+            //info("rank() ctr = %d", ctr);
             return bestCand;
         }
 
@@ -137,6 +195,12 @@ class LRUReplPolicy : public ReplPolicy {
             // (1) valid (if not valid, it's 0)
             // (2) sharers, and
             // (3) timestamp
+            /*
+            x = 0;
+            if (sharersAware)
+                x = cc->numSharers(id);
+            return x*timestamp + array[id]*cc->isvalid(id)
+            */
             return (sharersAware? cc->numSharers(id) : 0)*timestamp + array[id]*cc->isValid(id);
         }
 };

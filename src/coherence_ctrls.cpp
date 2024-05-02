@@ -27,6 +27,10 @@
 #include "cache.h"
 #include "network.h"
 
+#include "zsim.h"
+#include "event_recorder.h"
+#include "timing_event.h"
+
 /* Do a simple XOR block hash on address to determine its bank. Hacky for now,
  * should probably have a class that deals with this with a real hash function
  * (TODO)
@@ -198,7 +202,7 @@ uint64_t MESIBottomCC::processNonInclusiveWriteback(Address lineAddr, AccessType
 
 /* MESITopCC implementation */
 
-void MESITopCC::init(const g_vector<BaseCache*>& _children, Network* network, const char* name) {
+void MESITopCC::init(const g_vector<BaseCache*>& _children, Network* network, const char* name, MESICC* cc) {
     if (_children.size() > MAX_CACHE_CHILDREN) {
         panic("[%s] Children size (%d) > MAX_CACHE_CHILDREN (%d)", name, (uint32_t)_children.size(), MAX_CACHE_CHILDREN);
     }
@@ -208,6 +212,7 @@ void MESITopCC::init(const g_vector<BaseCache*>& _children, Network* network, co
         children[c] = _children[c];
         childrenRTTs[c] = (network)? network->getRTT(name, children[c]->getName()) : 0;
     }
+    this->cc = cc;
 }
 
 uint64_t MESITopCC::sendInvalidates(Address lineAddr, uint32_t lineId, InvType type, bool* reqWriteback, uint64_t cycle, uint32_t srcId) {
@@ -259,19 +264,43 @@ uint64_t MESITopCC::processEviction(Address wbLineAddr, uint32_t lineId, bool* r
 }
 
 uint64_t MESITopCC::processAccess(Address lineAddr, uint32_t lineId, AccessType type, uint32_t childId, bool haveExclusive,
-                                  MESIState* childState, bool* inducedWriteback, uint64_t cycle, uint32_t srcId, uint32_t flags, CacheArray* data_array) {
+                                  MESIState* childState, bool* inducedWriteback, uint64_t cycle, uint32_t srcId, uint32_t flags, CacheArray* data_array, MemReq req) {
     Entry* e = &array[lineId];
     
     std::vector<uint32_t> id_vector;
-    uint32_t assoc = data_array->get_set(lineAddr, id_vector);
+    std::vector<Address> address_vector;
+    uint32_t assoc = data_array->get_set(lineAddr, id_vector, address_vector);
     //info("data_array->get_set() = %d\n", assoc);
     //if (e->numSharers) info("e->numSharers = %d\n", e->numSharers);
 
-    bool reclaiming_possible_before = true;
-    if (assoc > 8){ // this means we are the LLC - won't work for all configs
-        assert(id_vector.size() > 8);
+    assert(id_vector.size() == assoc);
+    int32_t way = -1; // stores the way that the current cache line is in=
+    for(uint32_t i = 0; i < id_vector.size(); i++){
+        if (id_vector[i] == lineId){
+            way = i;
+        }
+    }
+    assert(way != -1);
 
-        for(uint32_t i = 0; i < id_vector.size(); i++){
+    // Ways 20 and 21 (the last two) are the reclaimed cache lines)
+    bool accessing_reclaimed_cache_line = false;
+    if (enable_reclaim && ((way == 20) || (way == 21))){
+        accessing_reclaimed_cache_line = true;
+    }
+
+    uint32_t min_way = (way/10)*10; // stores the starting way that we need to check (0, 10, 20)
+    way = way + 1;
+    uint32_t max_way = (way/10 + (way % 10 != 0))*10 - 1; // stores the last way that we need to check (9, 19, 29)
+
+    // This variable says if we are one of the cache lines whose directories can be repurposed
+    bool reclaimable_way = false;
+    if ((max_way < assoc) && (assoc > 8)){ // assoc > 8 means we are the LLC - won't work for all configs
+        reclaimable_way = true;
+    }
+
+    bool reclaiming_possible_before = true;
+    if (reclaimable_way){ 
+        for(uint32_t i = min_way; i <= max_way; i++){
             if (array[id_vector[i]].numSharers > 1){
                 reclaiming_possible_before = false;
             }
@@ -311,19 +340,31 @@ uint64_t MESITopCC::processAccess(Address lineAddr, uint32_t lineId, AccessType 
                 bool need_lim_ptr_eviction = false;
                 if (e->isExclusive()) {
                     //Downgrade the exclusive sharer
-                    respCycle = sendInvalidates(lineAddr, lineId, INVX, inducedWriteback, cycle, srcId);
+                    if (accessing_reclaimed_cache_line){
+                        // if we are a reclaimed cache line, we need to completely invalidate the exclusive copy
+                        // as we can only hold a single sharer
+                        respCycle = sendInvalidates(lineAddr, lineId, INV, inducedWriteback, cycle, srcId);
+                    }
+                    else{
+                        respCycle = sendInvalidates(lineAddr, lineId, INVX, inducedWriteback, cycle, srcId);
+                    }
+                    //respCycle = sendInvalidates(lineAddr, lineId, INVX, inducedWriteback, cycle, srcId);
                 }
                 else{
                     // CS533 
                     // LIMITED POINTER IMPLEMENTATION
-                    // FIND A WAY TO GET CONFIGS HERE
-                    bool ENABLE_LIM_POINTERS = false;
-                    uint32_t MAX_SHARERS = 8;
-
-                    if (ENABLE_LIM_POINTERS){
+                    uint32_t MAX_SHARERS;
+                    if (accessing_reclaimed_cache_line){
+                        MAX_SHARERS = 1;
+                    }
+                    else{
+                        MAX_SHARERS = max_sharers;
+                    }
+                    
+                    if (MAX_SHARERS != 0){
                         // This code functionally implements the lim. pointer scheme
-                        // while still using the full bit vector representation
-                        // used by zsim
+                        // while still storing sharer info in the full bit vector
+                        // that zsim uses
                         assert(e->numSharers <= MAX_SHARERS);
                         if (e->numSharers == MAX_SHARERS){
                             need_lim_ptr_eviction = true;
@@ -393,28 +434,121 @@ uint64_t MESITopCC::processAccess(Address lineAddr, uint32_t lineId, AccessType 
         default: panic("!?");
     }
 
-    
     bool reclaiming_possible_after = true;
-    if (assoc > 8){ // this means we are the LLC]
-        for(uint32_t i = 0; i < id_vector.size(); i++){
+    if (reclaimable_way){
+        for(uint32_t i = min_way; i <= max_way; i++){
             if (array[id_vector[i]].numSharers > 1){
                 reclaiming_possible_after = false;
             }
         }
 
         if (reclaiming_possible_before == false && reclaiming_possible_after == true){
-            // increment number of shared sets 
+            // increment number of reclaimable lines
             //info("reclaiming N -> Y");
-            //num_reclaimed_sets++;
-            profNumReclaimedSets.dec();
+            profNonReclaimableLines.dec();
             //info("num_reclaimed_sets = %ld", num_reclaimed_sets);
         }
         if (reclaiming_possible_before == true && reclaiming_possible_after == false){
-            // decrement number of reclaimed sets
+            // decrement number of reclaimable lines
             //info("reclaiming Y -> N");
-            //num_reclaimed_sets--;
-            profNumReclaimedSets.inc();
-            //info("num_reclaimed_sets = %ld", num_reclaimed_sets);
+            profNonReclaimableLines.inc();
+
+            // Enforce single-record invariant: Writeback access may have a timing
+            // record. If so, read it.
+
+            // Trying to fix a bug dealing with the timing records.
+            // Usually, processAccess can only generate on timing record, which basically happens on a GETS or GETX, and there is a cache miss
+            
+            // A timing record can also be generated from the eviction, when we miss in the cache and allocate a new line
+
+            // I don't care about very precisely modelling contention, etc. but it seems that the timing stuff is important for zsim
+
+            /*
+            EventRecorder* evRec = zinfo->eventRecorders[req.srcId];
+            TimingRecord wbAcc;
+            wbAcc.clear();
+            if (unlikely(evRec && evRec->hasRecord())) {
+                //info("TIMING RECORD!");
+
+                wbAcc = evRec->popRecord();
+            }*/
+
+            //*
+            EventRecorder* evRec = zinfo->eventRecorders[req.srcId];
+            TimingRecord rec;
+            rec.clear();
+            bool hadRec = false;
+            if (evRec && evRec->hasRecord()){
+                hadRec = true;
+                rec = evRec->popRecord();
+            }//*/
+
+            if (max_way == 9){
+                //req.srcId = id_vector[20];
+                // we don't have access to the access latency in this module, and I'm too lazy to add it
+                // so i'm just adding 40 to respCycle (lower numbers don't work..........)
+                if (cc->bcc->array[id_vector[20]] != I){
+                    info("DOING EVICTION OF RECLAIMED LINE 1");
+                    info("id_vector[20] == %d", id_vector[20]);
+                    info("address_vector[20] == %lx", address_vector[20]);
+                    cc->processEviction(req, address_vector[20], id_vector[20], respCycle+60);
+                }
+            }
+            else if (max_way == 19){
+                //req.srcId = id_vector[21];
+                //cc->processEviction(req, address_vector[21], id_vector[21], respCycle+30);
+                
+                if (cc->bcc->array[id_vector[21]] != I){
+                    info("DOING EVICTION OF RECLAIMED LINE 2");
+                    info("id_vector[21] == %d", id_vector[21]);
+                    info("address_vector[21] == %lx", address_vector[21]);
+                    cc->processEviction(req, address_vector[21], id_vector[21], respCycle+60);
+                }
+            }
+
+            if (evRec && evRec->hasRecord()){
+                evRec->popRecord();
+            }
+            if (hadRec){
+                evRec->pushRecord(rec);
+            }
+            
+            // /*/
+            //respCycle = cc->processAccess(req, lineId, respCycle, array);
+            /*
+            if (unlikely(wbAcc.isValid())) {
+                if (!evRec->hasRecord()) {
+                    //info("(!evRec->hasRecord())");
+                    // Downstream should not care about endEvent for PUTs
+                    wbAcc.endEvent = nullptr;
+                    evRec->pushRecord(wbAcc);
+                } else {
+                    
+                    //info("else");
+                    //info("req.cycle = %ld", req.cycle);
+                    // Connect both events
+                    TimingRecord acc = evRec->popRecord();
+                    //info("wbAcc.reqCycle = %ld", wbAcc.reqCycle);
+                    assert(wbAcc.reqCycle >= req.cycle);
+                    //info("acc.reqCycle = %ld", acc.reqCycle);
+                    assert(acc.reqCycle >= req.cycle);
+                    DelayEvent* startEv = new (evRec) DelayEvent(0);
+                    DelayEvent* dWbEv = new (evRec) DelayEvent(wbAcc.reqCycle - req.cycle);
+                    DelayEvent* dAccEv = new (evRec) DelayEvent(acc.reqCycle - req.cycle);
+
+                    //info("acc.reqCycle = %ld", acc.reqCycle);
+                    startEv->setMinStartCycle(req.cycle);
+                    dWbEv->setMinStartCycle(req.cycle);
+                    dAccEv->setMinStartCycle(req.cycle);
+                    startEv->addChild(dWbEv, evRec)->addChild(wbAcc.startEvent, evRec);
+                    startEv->addChild(dAccEv, evRec)->addChild(acc.startEvent, evRec);
+
+                    acc.reqCycle = req.cycle;
+                    acc.startEvent = startEv;
+                    // endEvent / endCycle stay the same; wbAcc's endEvent not connected
+                    evRec->pushRecord(acc);
+                }
+            }*/
         }
     }
     

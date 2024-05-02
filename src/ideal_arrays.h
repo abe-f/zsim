@@ -113,7 +113,7 @@ class IdealLRUArray : public CacheArray {
         ReplPolicy* getRP() const {return rp;}
         void setCC(CC* _cc) {cc = _cc;}
 
-        uint32_t get_set(Address lineAddr, std::vector<uint32_t>& id_list){
+        uint32_t get_set(Address lineAddr, std::vector<uint32_t>& id_list, std::vector<Address>& address_list){
             return -1;
         }
 };
@@ -284,7 +284,7 @@ class IdealLRUPartArray : public CacheArray {
             rp->update(lineId, req);
         }
 
-        uint32_t get_set(Address lineAddr, std::vector<uint32_t>& id_list){
+        uint32_t get_set(Address lineAddr, std::vector<uint32_t>& id_list, std::vector<Address>& address_list){
             return -1;
         }
 
