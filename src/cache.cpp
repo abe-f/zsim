@@ -105,7 +105,7 @@ uint64_t Cache::access(MemReq& req) {
                 wbAcc.endEvent = nullptr;
                 evRec->pushRecord(wbAcc);
             } else {
-                info("else");
+                //info("else");
                 //info("req.cycle = %ld", req.cycle);
                 // Connect both events
                 TimingRecord acc = evRec->popRecord();
